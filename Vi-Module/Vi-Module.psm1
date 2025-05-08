@@ -1,4 +1,6 @@
-Class ViSession
+Class ViModule { } #EndClass ViModule
+
+Class ViSession: ViModule
 {
 	[ValidateNotNullOrEmpty()][string]$VC
 	[ValidateNotNullOrEmpty()][string]$Key
@@ -11,6 +13,37 @@ Class ViSession
 	[ValidateSet('_THIS_', 'Foreign')][string]$Session
 	[double]$IdleMinutes
 } #EndClass ViSession
+
+Class ViCDP: ViModule
+{
+	[ValidateNotNullOrEmpty()][string]$VMHost
+	[ValidateNotNullOrEmpty()][string]$NIC
+	[ValidateNotNullOrEmpty()][string]$MAC
+	[ValidateNotNullOrEmpty()][string]$Vendor
+	[ValidateNotNullOrEmpty()][string]$Driver
+	[bool]$CDP
+	[int]$LinkMbps
+	[string]$Switch
+	[string]$Hardware
+	[string]$Software
+	[ipaddress]$MgmtIP
+	[string]$MgmtVlan
+	[string]$PortId
+	[string]$Vlan
+	
+	[string] ToString () { return "$($this.VMHost)::$($this.NIC) -> $($this.Switch)::$($this.PortId)" }
+	
+	[pscustomobject[]] GetAllVlan ()
+	{
+		return $this.Vlan -split ', ' | % { [pscustomobject] @{ VMHost = $this.VMHost; NIC = $this.NIC; Switch = $this.Switch; Port = $this.PortId; Vlan = $_ -as [int] } }
+	}
+	
+	[pscustomobject[]] GetVlan ([int[]]$VlanId)
+	{
+		return $this.Vlan -split ', ' | % { if ($VlanId -contains $_) { [pscustomobject] @{ VMHost = $this.VMHost; NIC = $this.NIC; Switch = $this.Switch; Port = $this.PortId; Vlan = $_ -as [int] } } }
+	}
+	
+} #EndClass ViCDP
 
 Function Get-RDM
 {
@@ -392,7 +425,7 @@ Function Set-PowerCLiTitle
 	Write connected VI servers info to the PowerCLi window title bar.
 .DESCRIPTION
 	This function writes connected VI servers info to the PowerCLi window/console title bar
-	in the following format: [VIServerName :: ProductType (VCenter/VCSA/ESXi/SRM/VAMI)-ProductVersion].
+	in the following format: [VIServerName :: ProductType (VCenter/VCSA/ESXi/SRM/VAMI/NSX)-ProductVersion].
 .EXAMPLE
 	PS C:\> Connect-VIServer VC1, VC2 -WarningAction SilentlyContinue
 	PS C:\> Set-PowerCLiTitle
@@ -402,12 +435,16 @@ Function Set-PowerCLiTitle
 .EXAMPLE
 	PS C:\> Connect-CisServer VCSA1, VCSA2 -WarningAction SilentlyContinue
 	PS C:\> Set-PowerCLiTitle
+.EXAMPLE
+	PS C:\> Connect-NsxServer -NsxServer nsxmgr1 -Credential $credNSX -VICredential $credVC
+	PS C:\> Set-PowerCLiTitle
 .NOTES
 	Author      :: Roman Gelman @rgelman75
 	Version 1.0 :: 17-Nov-2015 :: [Release] :: Publicly available
 	Version 1.1 :: 22-Aug-2016 :: [Improvement] :: Added support for SRM servers. Now the function differs berween VCSA and Windows VCenters. Minor visual changes
 	Version 1.2 :: 11-Jan-2017 :: [Change] :: Now this is advanced function, minor code changes
 	Version 1.3 :: 25-Oct-2017 :: [Improvement] :: Added support for VAMI servers, some code optimizations
+	Version 1.4 :: 01-Nov-2018 :: [Improvement] :: Added support for NSX Managers, requires PowerNSX module, -Verbose parameter supported
 .LINK
 	https://ps1code.com/2015/11/17/set-powercli-title
 #>
@@ -421,6 +458,7 @@ Function Set-PowerCLiTitle
 		$VIS = $global:DefaultVIServers | ? { $_.IsConnected } | sort -Descending ProductLine, Name
 		$SRM = $global:DefaultSrmServers | ? { $_.IsConnected } | sort -Descending ProductLine, Name
 		$CIS = $global:DefaultCisServers | ? { $_.IsConnected } | sort Name
+		$NSX = $global:DefaultNSXConnection | sort Server
 	}
 	Process
 	{
@@ -429,7 +467,8 @@ Function Set-PowerCLiTitle
 		{
 			$VIProduct = switch -exact ($ConnectedVIS.ProductLine)
 			{
-				'vpx' { if ($ConnectedVIS.ExtensionData.Content.About.OsType -match '^linux') { 'VCSA' } else { 'VCenter' }; Break }
+				'vpx' { if ($ConnectedVIS.ExtensionData.Content.About.OsType -match '^linux') { 'VCSA' }
+					else { 'VCenter' }; Break }
 				'embeddedEsx' { 'ESXi' }
 				Default { $ConnectedVIS.ProductLine }
 			}
@@ -448,11 +487,16 @@ Function Set-PowerCLiTitle
 		
 		### VAMI Servers ###
 		$CIS | % { $Header += "[$($_.Name) :: VAMI] " }
+		
+		### NSX Managers ###
+		$NSX | % { $Header += "[$($_.Server) :: NSX-$($_.Version)] " }
 	}
 	End
 	{
-		if (!$VIS -and !$SRM -and !$CIS) { $Header = ':: Not connected to any VI Servers ::' }
+		if (!$VIS -and !$SRM -and !$CIS -and !$NSX) { $Header = ':: Not connected to any VI Servers ::' }
 		$Host.UI.RawUI.WindowTitle = $Header
+		$Header -replace '\[|\s\[', $null -split '\]' | % { Write-Verbose $_ }
+		
 	}
 	
 } #EndFunction Set-PowerCLiTitle
@@ -883,8 +927,9 @@ Function Get-Version
 	[System.Management.Automation.PSCustomObject] PSObject collection.
 .NOTES
 	Author      :: Roman Gelman @rgelman75
-	Version 1.0 :: 23-May-2016 :: Release :: Publicly available
-	Version 1.1 :: 03-Aug-2016 :: Bugfix :: VDSwitch data type changed. Function Get-VersionVDSwitch edited
+	Version 1.0 :: 23-May-2016 :: [Release] :: Publicly available
+	Version 1.1 :: 03-Aug-2016 :: [Bugfix] :: VDSwitch data type changed. Function Get-VersionVDSwitch edited
+	Version 1.2 :: 24-Jan-2019 :: [Bugfix] :: Uncorrect PowerCLI version for post 6.5.1 binary modules
 .LINK
 	https://ps1code.com/2016/05/25/get-version-powercli
 #>
@@ -1054,19 +1099,30 @@ Function Get-Version
 			$ErrorActionPreference = 'Stop'
 			Try
 			{
-				$PCLi = Get-PowerCLIVersion
-				$PCLiVer = [string]$PCLi.Major + '.' + [string]$PCLi.Minor + '.' + [string]$PCLi.Revision + '.' + [string]$PCLi.Build
+				if ($CoreVersion = (Get-Module VMware.VimAutomation.Core))
+				{
+					if ($CoreVersion.Version.ToString() -lt '6.5.2')
+					{
+						$NativeVersion = Get-PowerCLIVersion -WarningAction SilentlyContinue
+						$FullVersion = $NativeVersion.UserFriendlyVersion
+						$Version = [version]"$($NativeVersion.Major).$($NativeVersion.Minor).$($NativeVersion.Revision).$($NativeVersion.Build)"
+					}
+					else
+					{
+						$FullVersion = "$($CoreVersion.Name) $($CoreVersion.Version)"
+						$Version = $CoreVersion.Version
+					}
+				}
 				
-				$Properties = [ordered]@{
+				[pscustomobject]@{
 					ProductName = $env:COMPUTERNAME
 					ProductType = 'VMware vSphere PowerCLi'
-					FullVersion = $PCLi.UserFriendlyVersion
-					Version = [version]$PCLiVer
+					FullVersion = $FullVersion
+					Version = $Version
 				}
-				$Object = New-Object PSObject -Property $Properties
-				$Object
 			}
 			Catch { }
+			
 		} #EndFunction Get-VersionPowerCLi
 		
 		Function Get-VersionVCenter
@@ -1284,55 +1340,60 @@ Function Search-Datastore
 .SYNOPSIS
 	Search files on VMware Datastores.
 .DESCRIPTION
-	This function searches files on ESXi hosts' Datastores.
+	This function searches files on VMware Datastore(s).
 .PARAMETER Datastore
 	Specifies Datastore object(s), returtned by Get-Datastore cmdlet or Datastore name.
 .PARAMETER FileName
 	Specifies file name pattern, the default is to search all files (*).
 .PARAMETER FileType
-	Specifies file type to search, the default is to search [.vmdk] or [.iso] files.
-.PARAMETER VerboseDatastoreName
-	If specified, the function sends Datastore name to the console after processing.
+	Specifies file type(s) to search, the default is to search all existing files.
 .EXAMPLE
-	PS C:\> Get-Datastore |Search-Datastore
-	Search all [*.vmdk] and [*.iso] files on all Datastores.
+	PS C:\> Get-Datastore | Search-Datastore
+	Search all files on all Datastores.
 .EXAMPLE
-	PS C:\> Get-Datastore datastore* |Search-Datastore -FileType VmdkOnly
-	Search all [*.vmdk] files on group of Datastores.
+	PS C:\> Get-Datastore datastore* | Search-Datastore -FileType Vmdk,Iso
+	Search all [*.vmdk] & [*.iso] files on several Datastores.
 .EXAMPLE
-	PS C:\> Get-DatastoreCluster backup |Get-Datastore |Search-Datastore -FileName 'win' -FileType IsoOnly -Verbose |ogv
-	Search [*win*.iso] files on all SDRS cluster members. Verbose each Datastore name.
+	PS C:\> Get-DatastoreCluster backup | Get-Datastore | Search-Datastore Iso win -Verbose | ogv
+	Search [*win*.iso] files on all SDRS cluster members. Output Datastore names to the console.
 .EXAMPLE
-	PS C:\> Search-Datastore -Datastore localssd -FileName 'vm1*' -FileType All |Format-Table -AutoSize
+	PS C:\> Search-Datastore -Datastore localssd -FileName vm1* | Format-Table -AutoSize
 	Search the specific VM related files [vm1*.*] on the Datastore named [localssd].
 .EXAMPLE
-	PS C:\> Get-DatastoreCluster test |Get-Datastore |Search-Datastore -FileType VmdkOnly -Verbose |? {$_.DaysInactive -gt 7} |sort DaysInactive -desc |epcsv .\Test.csv' -notype -Encoding UTF8 
-	Export vmdk files that were inactive more than one week.
+	PS C:\> Get-Datastore | Search-Datastore -FileType Vmdk -Orphaned | ? { $_.DaysInactive -gt 365 } | sort DaysInactive -desc | epcsv .\Orphaned.csv' -notype
+	Export to the Excel orphaned [*.vmdk] files that were inactive more than one year.
 .NOTES
 	Author      :: Roman Gelman @rgelman75
+	Shell       :: Tested on PowerShell 5.0 | PowerCLi 6.5.2
+	Platform    :: Tested on vSphere 5.5/6.5 | VCenter 5.5U2/VCSA 6.5U1 | NetApp/Isilon/VMAX NFS & VMFS datastores
 	Version 1.0 :: 09-Aug-2016 :: [Release] :: Publicly available
-	Version 1.1 :: 19-Sep-2016 :: [Bugfix]  :: Some SAN as NetApp return *-flat.vmdk files in the search. Such files were recognized as orphaned. [Changed Block Tracking Disk] file type was renamed to [CBT Disk]
-	Version 1.2 :: 17-Dec-2017 :: [Change] :: The -VerboseDatastoreName parameter deprecated and replace by common -Verbose. Minor code and examples changes
+	Version 1.1 :: 19-Sep-2016 :: [Bugfix] :: Some SAN as NetApp return *-flat.vmdk files in the search. Such files were recognized as orphaned. [Changed Block Tracking Disk] file type was renamed to [CBT Disk]
+	Version 1.2 :: 17-Dec-2017 :: [Change] :: The -VerboseDatastoreName parameter deprecated and replaced by the common -Verbose. Minor code and examples changes
 	Version 1.3 :: 18-Dec-2017 :: [Feature] :: VSAN Datastore support
+	Version 1.4 :: 10-Feb-2018 :: [Change] :: Added descriptions for several new file types. Code optimizations
+	Version 1.5 :: 15-Feb-2018 :: [Change] :: Available values for the -FileType parameter have changed
+	Version 1.6 :: 18-Feb-2018 :: [Feature] :: New -Orphaned parameter added. Parameters aliases removed
+	Version 2.0 :: 22-Feb-2018 :: [Feature] :: Multiple file types supoprted by -FileType parameter
 .LINK
 	https://ps1code.com/2016/08/21/search-datastores-powercli
 #>
 	
 	[CmdletBinding()]
-	[Alias("Search-ViMDatastore")]
+	[Alias("Search-ViMDatastore", "dsbrowse")]
 	[OutputType([pscustomobject])]
 	Param (
-		[Parameter(Mandatory, Position = 0, ValueFromPipeline)]
+		[Parameter(Mandatory, ValueFromPipeline)]
 		$Datastore
 		 ,
 		[Parameter(Mandatory = $false, Position = 1)]
-		[Alias("FileNamePattern")]
 		[string]$FileName = "*"
 		 ,
-		[Parameter(Mandatory = $false, Position = 2)]
-		[ValidateSet("Vmdk&Iso", "VmdkOnly", "IsoOnly", "All")]
-		[Alias("FileExtension")]
-		[string]$FileType = 'Vmdk&Iso'
+		[Parameter(Mandatory = $false, Position = 0)]
+		[ValidateSet("Vmdk", "Iso", "Template", "Bundle", "Vmx")]
+		[string[]]$FileType
+		 ,
+		[Parameter(Mandatory = $false)]
+		[switch]$Orphaned
 	)
 	
 	Begin
@@ -1361,27 +1422,48 @@ Function Search-Datastore
 			'vswp' = 'Swap'
 			'nvram' = 'BIOS State';
 			'log' = 'VM Log';
+			'vib' = 'Patch/Bundle';
+			'zip' = 'Patch/Archive';
+			'flp' = 'Floppy Image';
+			'hlog' = 'SvMotion Tracker';
 			'' = 'Unknown'
 		}
 		
 		if ($FileName -notmatch '\*') { $FileName = "*$FileName*" }
 		
-		switch ($FileType)
+		$FilePattern = @()
+		$FilePattern += if ($PSBoundParameters.ContainsKey('FileType'))
 		{
-			'Vmdk&Iso' { $FilePattern = @(($FileName + '.vmdk'), ($FileName + '.iso')); Break }
-			'VmdkOnly' { $FilePattern = @(($FileName + '.vmdk')); Break }
-			'IsoOnly'  { $FilePattern = @(($FileName + '.iso')); Break }
-			'All'      { $FilePattern = @(($FileName + '.*')) }
+			switch ($FileType)
+			{
+				{ $_ -contains 'Vmdk' } { @(($FileName + '.vmdk')) }
+				{ $_ -contains 'Iso' } { @(($FileName + '.iso')) }
+				{ $_ -contains 'Template' } { @(($FileName + '.vmtx')) }
+				{ $_ -contains 'Bundle' } { @(($FileName + '.vib'), ($FileName + '.zip')) }
+				{ $_ -contains 'Vmx' } { @(($FileName + '.vmx')) }
+			}
 		}
-		
+		else
+		{
+			@(($FileName + '.*'))
+		}
 	}
 	Process
 	{
-		if ($Datastore -is [string]) { $DsView = Get-View -Verbose:$false -ViewType Datastore | ? { $_.Name -eq $Datastore } }
-		elseif ($Datastore -is [VMware.VimAutomation.ViCore.Types.V1.DatastoreManagement.VmfsDatastore]) { $DsView = Get-View -Verbose:$false -VIObject $Datastore }
-		elseif ($Datastore -is [VMware.VimAutomation.ViCore.Types.V1.DatastoreManagement.NasDatastore]) { $DsView = Get-View -Verbose:$false -VIObject $Datastore }
-		elseif ($Datastore -is [VMware.VimAutomation.ViCore.Types.V1.DatastoreManagement.Datastore]) { $DsView = Get-View -Verbose:$false -VIObject $Datastore }
-		else { Throw "Not supported object type" }
+		$DsView = switch ($Datastore)
+		{
+			{
+				$_ -is [VMware.VimAutomation.ViCore.Types.V1.DatastoreManagement.VmfsDatastore] -or `
+				$_ -is [VMware.VimAutomation.ViCore.Types.V1.DatastoreManagement.NasDatastore] -or `
+				$_ -is [VMware.VimAutomation.ViCore.Types.V1.DatastoreManagement.Datastore]
+			}
+			{ Get-View -Verbose:$false -VIObject $Datastore }
+			
+			{ $_ -is [string] }
+			{ Get-View -Verbose:$false -ViewType Datastore | ? { $_.Name -eq $Datastore } }
+			
+			Default { Throw "Not supported object type" }
+		}
 		
 		if ($DsView)
 		{
@@ -1421,8 +1503,8 @@ Function Search-Datastore
 						$FileBody = $File.Groups['FileName'].Value
 						$ShortExt = $File.Groups['Ext'].Value
 						
-						if ($FileTypes.ContainsKey($ShortExt)) { $LongExt = $FileTypes.$ShortExt }
-						else { $LongExt = '.' + $ShortExt.ToUpper() }
+						$LongExt = if ($FileTypes.ContainsKey($ShortExt)) { $FileTypes.$ShortExt }
+						else { '.' + $ShortExt.ToUpper() }
 						
 						if ($ShortExt -eq 'vmdk')
 						{
@@ -1434,7 +1516,7 @@ Function Search-Datastore
 							}
 						}
 						
-						[pscustomobject]@{
+						$ViFile = [pscustomobject]@{
 							Datastore = $DsView.Name
 							Folder = [regex]::Match($folder.FolderPath, '\]\s(?<Folder>.+)/').Groups[1].Value
 							File = $fileResult.Path
@@ -1444,6 +1526,8 @@ Function Search-Datastore
 							Modified = ([datetime]$fileResult.Modification).ToString('dd-MMM-yyyy HH:mm')
 							DaysInactive = (New-TimeSpan -Start ($fileResult.Modification) -End $Now).Days
 						}
+						if ($Orphaned) { if ($ViFile.FileType -match '^Orphaned') { $ViFile } }
+						else { $ViFile }
 					}
 				}
 			}
@@ -2088,15 +2172,16 @@ Function Get-VMHostGPU
 .PARAMETER VMHost
 	VMHost object(s), returnd by Get-VMHost cmdlet.
 .EXAMPLE
-	PowerCLI C:\> Get-VMHost $VMHostName |Get-VMHostGPU
+	PS C:\> Get-VMHost $VMHostName |Get-VMHostGPU
 .EXAMPLE
-	PowerCLI C:\> Get-Cluster $vCluster |Get-VMHost |Get-VMHostGPU |ft -au
+	PS C:\> Get-Cluster $vCluster |Get-VMHost |Get-VMHostGPU |ft -au
 .NOTES
 	Author      :: Roman Gelman @rgelman75
-	Shell       :: Tested on PowerShell 5.0|PowerCLi 6.5
-	Platform    :: Tested on vSphere 5.5/6.5|vCenter 5.5U2/VCSA 6.5a|NVIDIAGRID K2
-	Requirement :: PowerShell 3.0+
+	Shell       :: Tested on PowerShell 5.0 | PowerCLi 6.5
+	Platform    :: Tested on vSphere 5.5/6.5 | vCenter 5.5U2/VCSA 6.5a | NVIDIAGRID K2
+	Requirement :: PowerShell 3.0
 	Version 1.0 :: 23-Apr-2017 :: [Release] :: Publicly available
+	Version 1.1 :: 12-Sep-2018 :: [Bugfix] :: VMHosts, registered by IP displayed incorrectly
 .LINK
 	https://ps1code.com/2017/04/23/esxi-vgpu-powercli
 #>
@@ -2114,12 +2199,10 @@ Function Get-VMHostGPU
 		$ErrorActionPreference = 'Stop'
 		$WarningPreference = 'SilentlyContinue'
 		$rgxSuffix = '^grid_'
-	} #EndBegin
-	
+	}
 	Process
 	{
 		$VMHostView = Get-View -Id $VMHost.Id -Verbose:$false
-		
 		$Profiles = $VMHostView.Config.SharedPassthruGpuTypes
 		
 		foreach ($GraphicInfo in $VMHostView.Config.GraphicsInfo)
@@ -2139,21 +2222,21 @@ Function Get-VMHostGPU
 			{
 				$ProfileActive = 'N/A'
 			}
-			$returnGraphInfo = [pscustomobject]@{
-				VMHost = [regex]::Match($VMHost.Name, '^(.+?)(\.|$)').Groups[1].Value
+			
+			$VMHostName = if ($VMHost.Name -match '[a-zA-Z]') { [regex]::Match($VMHost.Name, '^(.+?)(\.|$)').Groups[1].Value } else { $VMHost.Name }
+			
+			[pscustomobject] @{
+				VMHost = $VMHostName
 				VideoCard = $GraphicInfo.DeviceName
 				Vendor = $GraphicInfo.VendorName
 				Mode = $GraphicInfo.GraphicsType
 				MemoryGB = [System.Math]::Round($GraphicInfo.MemorySizeInKB/1MB, 0)
-				ProfileSupported = ($Profiles -replace $rgxSuffix, '') -join ','
+				ProfileSupported = ($Profiles -replace $rgxSuffix, '') -join ', '
 				ProfileActive = $ProfileActive
-				VM = $VMs
+				VM = $VMs -join ', '
 			}
-			$returnGraphInfo
 		}
-		
-	} #EndProcess
-	
+	}
 	End { }
 	
 } #EndFunction Get-VMHostGPU
@@ -2937,7 +3020,7 @@ Function Expand-VMGuestPartition
 			}
 			else
 			{
-				New-Object System.Management.Automation.PSCredential($GuestUser, (ConvertTo-SecureString $GuestPassword -AsPlainText –Force))
+				New-Object System.Management.Automation.PSCredential($GuestUser, (ConvertTo-SecureString $GuestPassword -AsPlainText -Force))
 			}
 			
 			$SelectedPartitionCapacityBefore = ($VMPartition | ? { $_.Volume -eq $SelectedPartition.Volume }).CapacityGB
@@ -3065,7 +3148,7 @@ Function Get-ViSession
 			else { $Session | Add-Member -MemberType NoteProperty -Name Session -Value "Foreign" }
 			
 			### Add idle time ###
-			$Session | Add-Member -MemberType NoteProperty -Name IdleMinutes -Value ([Math]::Round(((Get-Date) – ($_.LastActiveTime).ToLocalTime()).TotalMinutes))
+			$Session | Add-Member -MemberType NoteProperty -Name IdleMinutes -Value ([Math]::Round(((Get-Date) - ($_.LastActiveTime).ToLocalTime()).TotalMinutes))
 			
 			### Filter output out ###
 			$ViSessions += if ($PSCmdlet.ParameterSetName -eq 'USER')
@@ -3303,3 +3386,215 @@ Function New-SmartSnapshot
 	End { }
 	
 } #EndFunction New-SmartSnapshot
+
+Function Get-VMHostCDP
+{
+	
+<#
+.SYNOPSIS
+	Get CDP info for ESXi hosts.
+.DESCRIPTION
+	This function retrieves CDP (Cisco Discovery Protocol) info for ESXi host(s).
+.PARAMETER VMHost
+	Specifies ESXi host object(s), returnd by Get-VMHost cmdlet.
+.PARAMETER CdpOnly
+	If specified, vmnics connected to non-CDP capable ports are excluded from the output.	
+.EXAMPLE
+	PS> Get-VMHost | Get-VMHostCDP
+	Return default properties only.
+.EXAMPLE
+	PS> Get-VMHost esx1.* | Get-VMHostCDP | select * 
+	Show all returned properties.
+.EXAMPLE
+	PS> Get-Cluster PROD | Get-VMHost | Get-VMHostCDP -CdpOnly | Export-Csv -notype .\Nexus.csv
+	Export all CDP capable ports from particular Cluster.
+.EXAMPLE
+	PS> Get-VMHost | Get-VMHostCDP -CdpOnly | % { $_.ToString() }
+	Show brief port-to-port view by static ToString() method.
+.EXAMPLE
+	PS> Get-Cluster PROD | Get-VMHost | Get-VMHostCDP -CdpOnly | % { $_.GetVlan() } | ? { $_.Vlan -eq 25 } | sort Switch, { [int]([regex]::Match($_.Port, '\d+$').Value) } | ft -au
+	Show VLAN view by static GetVlan() method.
+.NOTES
+	Author      :: Roman Gelman @rgelman75
+	Shell       :: Tested on PowerShell 5.0 | PowerCLi 6.5.2
+	Platform    :: Tested on vSphere 5.5/6.5 | VCenter 5.5U2/VCSA 6.5U1 | Cisco Nexus 5000 Series
+	Version 1.0 :: 25-Mar-2018 :: [Release] :: Publicly available
+.LINK
+	https://ps1code.com/2018/03/25/cdp-powercli
+#>
+	
+	[CmdletBinding()]
+	[Alias("Get-ViMVMHostCDP", "Get-ViMCDP")]
+	[OutputType([ViCDP])]
+	Param
+	(
+		[Parameter(Mandatory, ValueFromPipeline)]
+		[VMware.VimAutomation.ViCore.Types.V1.Inventory.VMHost]$VMHost
+		 ,
+		[Parameter(Mandatory = $false)]
+		[switch]$CdpOnly
+	)
+	
+	Begin { $return = @() }
+	Process
+	{
+		$ConfigManagerView = Get-View $VMHost.ExtensionData.ConfigManager.NetworkSystem
+		$PNICs = $ConfigManagerView.NetworkInfo.Pnic
+		
+		foreach ($PNIC in $PNICs)
+		{
+			$PhysicalNicHintInfo = $ConfigManagerView.QueryNetworkHint($PNIC.Device)
+			
+			$Vendor = switch -regex ($PNIC.Driver)
+			{
+				'^(elx|be)' { 'Emulex'; Break }
+				'^(igb|ixgb|e10)' { 'Intel'; Break }
+				'^(bnx|tg|ntg)' { 'Broadcom'; Break }
+				'^nmlx' { 'HPE'; Break }
+				'^cdc' { 'IBM/LENOVO' }
+				Default { 'Unknown' }
+			}
+			
+			$portInfo = [ViCDP] @{
+				VMHost = if ($VMHost.Name -match '\w') { [regex]::Match($VMHost.Name, '^(.+?)(\.|$)').Groups[1].Value } else { $VMHost.Name };
+				NIC = $PNIC.Device;
+				MAC = $PNIC.Mac.ToUpper();
+				Vendor = $Vendor;
+				Driver = $PNIC.Driver;
+				CDP = if ($PhysicalNicHintInfo.ConnectedSwitchPort) { $true } else { $false };
+				LinkMbps = if ($PNIC.LinkSpeed.SpeedMb) { $PNIC.LinkSpeed.SpeedMb } else { 0 };
+				Switch = [string]$PhysicalNicHintInfo.ConnectedSwitchPort.DevId;
+				Hardware = [string]$PhysicalNicHintInfo.ConnectedSwitchPort.HardwarePlatform;
+				Software = [string]$PhysicalNicHintInfo.ConnectedSwitchPort.SoftwareVersion;
+				MgmtIP = [ipaddress]$PhysicalNicHintInfo.ConnectedSwitchPort.MgmtAddr;
+				MgmtVlan = [string]$PhysicalNicHintInfo.ConnectedSwitchPort.Vlan;
+				PortId = [string]$PhysicalNicHintInfo.ConnectedSwitchPort.PortId;
+				Vlan = if ($PhysicalNicHintInfo.Subnet.VlanId) { ($PhysicalNicHintInfo.Subnet.VlanId | sort) -join ', ' -as [string] } else { [string]::Empty };
+			}
+			if ($CdpOnly) { if ($portInfo.CDP) { $return += $portInfo } }
+			else { $return += $portInfo }
+		}
+	}
+	End { $return | sort VMHost, { [int]([regex]::Match($_.NIC, '\d+').Value) } }
+	
+} #EndFunction Get-VMHostCDP
+
+Function Get-VMLoggedOnUser
+{
+	
+<#
+.SYNOPSIS
+	Get users logged on to VMware VM.
+.DESCRIPTION
+	This function retrieves local and domain user accounts logged on to VMware VM(s).
+.PARAMETER Username
+	Specifies a search criteria for the user account's name.
+.PARAMETER ExcludeLocal
+	If specified, local (non domain) user accounts will be excluded from the output.
+.EXAMPLE
+	PS C:\> Get-VM vm1 | Get-VMLoggedOnUser
+.EXAMPLE
+	PS C:\> Get-VM vm1, vm2 | Get-VMLoggedOnUser -ExcludeLocal
+.EXAMPLE
+	PS C:\> Get-VM | Get-VMLoggedOnUser -Username admin
+.EXAMPLE
+	PS C:\> Get-VM | Get-VMLoggedOnUser -Username '^[a-z][^_-]+$'
+	Find logged on users, that do not contain [_underscore] or [-minus] characters in their name.
+.EXAMPLE
+	PS C:\> Get-VM | Get-VMLoggedOnUser -Username '^[a-z][^_-]{5,8}$'
+	Find logged on users, that do not contain [_underscore] or [-minus] in their name and have length between 5 to 8 chars.
+.EXAMPLE
+	PS C:\> Get-Cluster PROD | Get-VM | Get-VMLoggedOnUser -Verbose | ogv -Title LoggedOnReport
+.NOTES
+	Author      :: Roman Gelman @rgelman75
+	Shell       :: Tested on PowerShell 5.0 | PowerCLi 6.5
+	Platform    :: Tested on vSphere 5.5/6.5 | VCenter 5.5U2/VCSA 6.5U1
+	Requirement :: Windows VMGuest NT6 or above
+	Restriction :: The user running current PowerShell session (powershell.exe) is excluded from the output!
+	Version 1.0 :: 22-Nov-2018 :: [Release] :: Publicly available
+.LINK
+	https://ps1code.com/2018/11/22/vm-logged-on-powercli
+#>
+	
+	[CmdletBinding(DefaultParameterSetName = 'EXC')]
+	[Alias("Get-VMLoggedInUser")]
+	[OutputType([pscustomobject])]
+	Param (
+		[Parameter(Mandatory, ValueFromPipeline)]
+		[VMware.VimAutomation.ViCore.Types.V1.Inventory.VirtualMachine]$VM
+		 ,
+		[Parameter(Mandatory = $false, ParameterSetName = 'EXC')]
+		[switch]$ExcludeLocal
+		 ,
+		[Parameter(Mandatory = $false, ParameterSetName = 'USR')]
+		[ValidateNotNullOrEmpty()]
+		[string]$Username
+	)
+	
+	Begin
+	{
+		$ErrorActionPreference = 'SilentlyContinue'
+		$WarningPreference = 'SilentlyContinue'
+		$FunctionName = '{0}' -f $MyInvocation.MyCommand
+		Write-Verbose "$FunctionName :: Started at [$(Get-Date)]"
+		$Me = "$env:USERDOMAIN\$env:USERNAME"
+		$SYSTEM = @($null, 'ANONYMOUS LOGON', 'LOCAL SERVICE', 'NETWORK SERVICE', 'SYSTEM', 'IUSR', 'IUSR_METRO', 'DefaultAppPool')
+		$LogonSession = @()
+	}
+	Process
+	{
+		if ($VM.PowerState -eq 'PoweredOn' -and $VM.Guest.State -eq 'Running' -and $VM.Guest.RuntimeGuestId -match '^win')
+		{
+			$VMGuestHostname = if ('localhost', $null -notcontains $VM.Guest.HostName) { $VM.Guest.HostName }
+			else { $VM.Name }
+			
+			Write-Progress -Activity $FunctionName -Status "Retrieving logged on users on VM [$($VM.Name)] ..." -CurrentOperation "VMGuest [$VMGuestHostname]"
+			
+			$Session = Get-CimInstance -CN $VMGuestHostname -Class Win32_LoggedOnUser -Verbose:$false -OperationTimeoutSec 5 |
+			select -Unique @{ N = 'Computer'; E = { $_.PSComputerName } },
+				   @{ N = 'Domain'; E = { $_.Antecedent.Domain } },
+				   @{ N = 'Account'; E = { $_.Antecedent.Name } },
+				   @{ N = 'Username'; E = { "$($_.Antecedent.Domain)\$($_.Antecedent.Name)" } } |
+			? { $SYSTEM -notcontains $_.Account -and $_.Account -notmatch '(\$$|^MSSQL\$|^\.NET|^DWM-\d)' -and $_.Username -ne $Me } | sort Domain, Account
+			
+			$LogonSession = $Session | % {
+				[pscustomobject] @{
+					VM = $VM.Name
+					Notes = $VM.Notes -replace ("`n", ' ')
+					Guest = $_.Computer
+					Domain = $_.Domain
+					User = $_.Account
+					Logon = $_.Username
+				}
+			}
+			
+			### Exclude local logons ###
+			if ($PSCmdlet.ParameterSetName -eq 'EXC')
+			{
+				if ($ExcludeLocal) { $LogonSession | % { if ($_.Domain -ne [regex]::Match($_.Guest, '^(.+?)(\.|$)').Groups[1].Value) { $_ } } }
+				else { $LogonSession }
+			}
+			### Find specific logon ###
+			else
+			{
+				if ($Username) { $LogonSession | % { if ($_.User -imatch $Username) { $_ } } }
+				else { $LogonSession }
+			}
+		}
+		else
+		{
+			### Write verbose message for skipped VM ###
+			$Reason = if ($VM.PowerState -ne 'PoweredOn') { "VM $($VM.PowerState)" }
+			elseif ($VM.Guest.State -ne 'Running') { "Guest $($VM.Guest.State)" }
+			elseif ($VM.Guest.RuntimeGuestId -notmatch '^windows') { "Not supported Guest $($VM.Guest.GuestFamily)" }
+			else { 'Unknown' }
+			
+			Write-Verbose "$FunctionName :: Skipped VM [$($VM.Name)] :: Reason [$Reason]"
+		}
+	}
+	End
+	{
+		Write-Verbose "$FunctionName :: Finished at [$(Get-Date)]"
+	}
+	
+} #EndFunction Get-VMLoggedOnUser

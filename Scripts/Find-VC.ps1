@@ -28,7 +28,7 @@
 .OUTPUTS
 	PSCustomObject with two Properties: VC,VMHost or $null.
 .LINK
-	http://rgel75.wix.com/blog
+	https://ps1code.com
 #>
 
 Param (
